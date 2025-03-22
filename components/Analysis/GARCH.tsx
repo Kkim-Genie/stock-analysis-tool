@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 import {
   LineChart,
@@ -10,7 +10,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { Stock, GARCHParams, AnalysisResult } from "../../lib/types";
+import { Stock, GARCHParams } from "../../lib/types";
 import {
   formatAnalysisResults,
   normalizeData,
@@ -23,120 +23,99 @@ interface GARCHAnalysisProps {
   params: GARCHParams;
 }
 
-const GARCHAnalysis: React.FC<GARCHAnalysisProps> = ({
+const GARCHAnalysis = ({
   stocks,
   selectedStock,
   params,
-}) => {
-  const [results, setResults] = useState<AnalysisResult[]>([]);
-  const [volatilityResults, setVolatilityResults] = useState<AnalysisResult[]>(
-    []
-  );
+}: GARCHAnalysisProps) => {
+  const [results, setResults] = useState<
+    Array<{ date: string; value: number; prediction?: number }>
+  >([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const handleStartAnalysis = async () => {
     if (!selectedStock) {
       setError("Please select a stock for GARCH analysis");
       return;
     }
 
-    const runGARCHAnalysis = async () => {
-      try {
-        setIsLoading(true);
-        setError(null);
+    try {
+      setIsLoading(true);
+      setError(null);
 
-        // Find selected stock data
-        const stock = stocks.find((s) => s.symbol === selectedStock);
-        if (!stock) {
-          throw new Error(`Stock ${selectedStock} not found`);
-        }
-
-        // Calculate returns
-        const prices = stock.data.map((d) => d.close);
-        const returns: number[] = [];
-
-        for (let i = 1; i < prices.length; i++) {
-          // Log returns: ln(P_t / P_{t-1})
-          returns.push(Math.log(prices[i] / prices[i - 1]));
-        }
-
-        // Normalize returns
-        const [normalizedReturns, minReturn, maxReturn] =
-          normalizeData(returns);
-        const returnsArray = Array.from(normalizedReturns.dataSync());
-
-        // Train GARCH model
-        const { predictedReturns, predictedVolatility } = await trainGARCHModel(
-          returnsArray,
-          params.p,
-          params.q,
-          params.forecastSteps
-        );
-
-        // Denormalize the predicted returns
-        const denormalizedReturns = denormalizeData(
-          predictedReturns,
-          minReturn,
-          maxReturn
-        );
-
-        // Convert returns back to prices
-        const lastPrice = stock.data[stock.data.length - 1].close;
-        const predictedPrices: number[] = [];
-        let currentPrice = lastPrice;
-
-        for (const ret of denormalizedReturns) {
-          currentPrice = currentPrice * Math.exp(ret);
-          predictedPrices.push(currentPrice);
-        }
-
-        // Prepare dates for forecasts (assuming they continue sequentially)
-        const lastDate = new Date(stock.data[stock.data.length - 1].date);
-        const forecastDates: string[] = [];
-
-        for (let i = 0; i < params.forecastSteps; i++) {
-          const nextDate = new Date(lastDate);
-          nextDate.setDate(nextDate.getDate() + i + 1);
-          forecastDates.push(nextDate.toISOString().split("T")[0]);
-        }
-
-        // Format results
-        const priceResults = formatAnalysisResults(
-          stock.data.map((d) => d.date),
-          prices,
-          predictedPrices
-        );
-
-        // Format volatility results
-        // We'll use dates starting from the second point (since we lose one for returns calculation)
-        const volatilityDates = stock.data
-          .slice(1)
-          .map((d) => d.date)
-          .concat(forecastDates);
-        const volatilityValues = formatAnalysisResults(
-          volatilityDates,
-          Array(returns.length)
-            .fill(0)
-            .map((_, i) => Math.sqrt(Math.abs(returns[i]))),
-          predictedVolatility
-        );
-
-        setResults(priceResults);
-        setVolatilityResults(volatilityValues);
-      } catch (err) {
-        setError(
-          `GARCH analysis failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
-      } finally {
-        setIsLoading(false);
+      // Find selected stock data
+      const stock = stocks.find((s: Stock) => s.symbol === selectedStock);
+      if (!stock) {
+        throw new Error(`Stock ${selectedStock} not found`);
       }
-    };
 
-    runGARCHAnalysis();
-  }, [stocks, selectedStock, params]);
+      // Calculate returns
+      const prices = stock.data.map((d: { close: number }) => d.close);
+      const returns: number[] = [];
+
+      for (let i = 1; i < prices.length; i++) {
+        // Log returns: ln(P_t / P_{t-1})
+        returns.push(Math.log(prices[i] / prices[i - 1]));
+      }
+
+      // Normalize returns
+      const [normalizedReturns, minReturn, maxReturn] = normalizeData(returns);
+      const returnsArray = Array.from(normalizedReturns.dataSync());
+
+      // Train GARCH model
+      const { predictedReturns } = await trainGARCHModel(
+        returnsArray,
+        params.p,
+        params.q,
+        params.forecastSteps
+      );
+
+      // Denormalize the predicted returns
+      const denormalizedReturns = denormalizeData(
+        predictedReturns,
+        minReturn,
+        maxReturn
+      );
+
+      // Convert returns back to prices
+      const lastPrice = stock.data[stock.data.length - 1].close;
+      const predictedPrices: number[] = [];
+      let currentPrice = lastPrice;
+
+      for (const ret of denormalizedReturns) {
+        currentPrice = currentPrice * Math.exp(ret);
+        predictedPrices.push(currentPrice);
+      }
+
+      // Prepare dates for forecasts (assuming they continue sequentially)
+      const lastDate = new Date(stock.data[stock.data.length - 1].date);
+      const forecastDates: string[] = [];
+
+      for (let i = 0; i < params.forecastSteps; i++) {
+        const nextDate = new Date(lastDate);
+        nextDate.setDate(nextDate.getDate() + i + 1);
+        forecastDates.push(nextDate.toISOString().split("T")[0]);
+      }
+
+      // Format results
+      const priceResults = formatAnalysisResults(
+        stock.data.map((d) => d.date),
+        prices,
+        predictedPrices
+      );
+
+      setResults(priceResults);
+    } catch (err) {
+      setError(
+        `GARCH analysis failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // GARCH model implementation using TensorFlow.js
   const trainGARCHModel = async (
@@ -144,7 +123,7 @@ const GARCHAnalysis: React.FC<GARCHAnalysisProps> = ({
     p: number, // GARCH order
     q: number, // ARCH order
     forecastSteps: number
-  ): Promise<{ predictedReturns: number[]; predictedVolatility: number[] }> => {
+  ): Promise<{ predictedReturns: number[] }> => {
     const lag = Math.max(p, q);
 
     if (returns.length <= lag) {
@@ -157,7 +136,6 @@ const GARCHAnalysis: React.FC<GARCHAnalysisProps> = ({
     // Create features: lagged returns and lagged squared returns
     const features: number[][] = [];
     const returnTargets: number[] = [];
-    const volTargets: number[] = [];
 
     for (let i = lag; i < returns.length; i++) {
       const row: number[] = [];
@@ -174,13 +152,11 @@ const GARCHAnalysis: React.FC<GARCHAnalysisProps> = ({
 
       features.push(row);
       returnTargets.push(returns[i]);
-      volTargets.push(returnSquared[i]);
     }
 
     // Convert to tensors
     const X = tf.tensor2d(features);
     const yReturns = tf.tensor2d(returnTargets, [returnTargets.length, 1]);
-    const yVol = tf.tensor2d(volTargets, [volTargets.length, 1]);
 
     // Train returns model
     const returnsModel = tf.sequential();
@@ -210,190 +186,101 @@ const GARCHAnalysis: React.FC<GARCHAnalysisProps> = ({
       verbose: 0,
     });
 
-    // Train volatility model
-    const volModel = tf.sequential();
-
-    volModel.add(
-      tf.layers.dense({
-        units: 20,
-        activation: "relu",
-        inputShape: [p + q],
-      })
-    );
-
-    volModel.add(
-      tf.layers.dense({
-        units: 1,
-        activation: "relu", // Volatility is non-negative
-      })
-    );
-
-    volModel.compile({
-      optimizer: tf.train.adam(),
-      loss: "meanSquaredError",
-    });
-
-    await volModel.fit(X, yVol, {
-      epochs: 100,
-      batchSize: 32,
-      verbose: 0,
-    });
-
     // Generate forecasts
     const predictedReturns: number[] = [];
-    const predictedVolatility: number[] = [];
+    let currentFeatures = features[features.length - 1];
 
-    // Start with the last observations
-    const lastReturns = returns.slice(-p);
-    const lastReturnSquared = returnSquared.slice(-q);
-
-    // Generate forecasts recursively
     for (let i = 0; i < forecastSteps; i++) {
-      // Prepare input features
-      const inputFeatures: number[] = [
-        ...lastReturns.slice(-p),
-        ...lastReturnSquared.slice(-q),
+      const prediction = (
+        returnsModel.predict(tf.tensor2d([currentFeatures])) as tf.Tensor
+      ).dataSync()[0];
+
+      predictedReturns.push(prediction);
+
+      // Update features for next prediction
+      currentFeatures = [
+        prediction,
+        ...currentFeatures.slice(0, p - 1),
+        prediction * prediction,
+        ...currentFeatures.slice(p, p + q - 1),
       ];
-
-      const input = tf.tensor2d([inputFeatures], [1, p + q]);
-
-      // Predict return
-      const returnPred = returnsModel.predict(input) as tf.Tensor;
-      const returnValue = returnPred.dataSync()[0];
-
-      // Predict volatility
-      const volPred = volModel.predict(input) as tf.Tensor;
-      const volValue = volPred.dataSync()[0];
-
-      predictedReturns.push(returnValue);
-      predictedVolatility.push(Math.sqrt(Math.abs(volValue))); // Convert to standard deviation
-
-      // Update for next iteration
-      lastReturns.shift();
-      lastReturns.push(returnValue);
-
-      lastReturnSquared.shift();
-      lastReturnSquared.push(returnValue * returnValue);
-
-      // Clean up tensors
-      input.dispose();
-      returnPred.dispose();
-      volPred.dispose();
     }
 
     // Clean up
     X.dispose();
     yReturns.dispose();
-    yVol.dispose();
     returnsModel.dispose();
-    volModel.dispose();
 
-    return { predictedReturns, predictedVolatility };
+    return { predictedReturns };
   };
-
-  if (isLoading) {
-    return <div className="text-center py-10">Loading GARCH analysis...</div>;
-  }
-
-  if (error) {
-    return <div className="text-red-500 py-4">{error}</div>;
-  }
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold">GARCH Analysis</h2>
-
-      <div className="border rounded-lg p-4 bg-white">
-        <h3 className="text-lg font-medium mb-3">
-          {selectedStock} - Price Forecast
-        </h3>
-
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart
-            data={results}
-            margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-          >
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              dataKey="date"
-              tick={{ fontSize: 12 }}
-              interval={Math.floor(results.length / 10)}
-            />
-            <YAxis />
-            <Tooltip
-              formatter={(value) => [
-                `${parseFloat(value as string).toFixed(2)}`,
-                "Price",
-              ]}
-              labelFormatter={(label) => `Date: ${label}`}
-            />
-            <Legend />
-            <Line
-              type="monotone"
-              dataKey="value"
-              stroke="#8884d8"
-              name="Actual"
-              dot={false}
-              strokeWidth={2}
-            />
-            <Line
-              type="monotone"
-              dataKey="prediction"
-              stroke="#ff7300"
-              name="Forecast"
-              strokeDasharray="5 5"
-              strokeWidth={2}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold">GARCH Analysis</h2>
+        <button
+          onClick={handleStartAnalysis}
+          disabled={isLoading}
+          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+        >
+          {isLoading ? "분석 중..." : "분석 시작"}
+        </button>
       </div>
 
-      <div className="border rounded-lg p-4 bg-white">
-        <h3 className="text-lg font-medium mb-3">
-          {selectedStock} - Volatility Forecast
-        </h3>
+      {error && (
+        <div className="text-red-500 p-4 border border-red-300 rounded bg-red-50">
+          {error}
+        </div>
+      )}
 
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart
-            data={volatilityResults}
-            margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-          >
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              dataKey="date"
-              tick={{ fontSize: 12 }}
-              interval={Math.floor(volatilityResults.length / 10)}
-            />
-            <YAxis />
-            <Tooltip
-              formatter={(value) => [
-                `${parseFloat(value as string).toFixed(4)}`,
-                "Volatility",
-              ]}
-              labelFormatter={(label) => `Date: ${label}`}
-            />
-            <Legend />
-            <Line
-              type="monotone"
-              dataKey="value"
-              stroke="#82ca9d"
-              name="Historical"
-              dot={false}
-              strokeWidth={2}
-            />
-            <Line
-              type="monotone"
-              dataKey="prediction"
-              stroke="#ff7300"
-              name="Forecast"
-              strokeDasharray="5 5"
-              strokeWidth={2}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      {results.length > 0 && (
+        <div className="border rounded-lg p-4 bg-white">
+          <h3 className="text-lg font-medium mb-3">
+            {selectedStock} - Price Forecast
+          </h3>
+
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart
+              data={results}
+              margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 12 }}
+                interval={Math.floor(results.length / 10)}
+              />
+              <YAxis />
+              <Tooltip
+                formatter={(value) => [
+                  `${parseFloat(value as string).toFixed(2)}`,
+                  "Price",
+                ]}
+                labelFormatter={(label) => `Date: ${label}`}
+              />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke="#8884d8"
+                name="Actual"
+                dot={false}
+                strokeWidth={2}
+              />
+              <Line
+                type="monotone"
+                dataKey="prediction"
+                stroke="#ff7300"
+                name="Forecast"
+                strokeDasharray="5 5"
+                strokeWidth={2}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 };
 
-export default GARCHAnalysis;
+export default GARCHAnalysis as React.FC<GARCHAnalysisProps>;

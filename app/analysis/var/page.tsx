@@ -1,20 +1,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import dynamic from "next/dynamic";
 import StockSelector from "@/components/StockSelector";
 import { mockStocks } from "@/lib/mockData";
 import { Stock, VARParams } from "@/lib/types";
-
-// 동적 import로 VARAnalysis 컴포넌트 지연 로딩
-const VARAnalysis = dynamic(() => import("@/components/Analysis/VAR"), {
-  loading: () => <p className="text-center py-4">분석 컴포넌트 로딩 중...</p>,
-  ssr: false,
-});
+import VARAnalysis from "@/components/Analysis/VAR";
 
 export default function VARPage() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
+  const [targetStock, setTargetStock] = useState<string>("");
+  const [featureStocks, setFeatureStocks] = useState<string[]>([]);
   const [varParams, setVarParams] = useState<VARParams>({
     lag: 3,
     forecastSteps: 20,
@@ -27,28 +23,15 @@ export default function VARPage() {
     const timer = setTimeout(() => {
       setStocks(mockStocks);
 
-      // 첫 번째 주식만 기본 선택 (더 적은 수의 주식으로 시작)
-      if (mockStocks.length > 0) {
-        setSelectedStocks([mockStocks[0].symbol]);
-      }
+      // 모든 주식을 선택 가능한 목록으로 추가
+      setSelectedStocks(mockStocks.map(stock => stock.symbol));
       setIsLoading(false);
     }, 100);
 
     return () => clearTimeout(timer);
   }, []);
 
-  // 주식 선택 핸들러
-  const handleStockSelection = (symbols: string[]) => {
-    // 최대 선택 가능한 주식 수 제한 (최적화)
-    if (symbols.length > 3) {
-      alert(
-        "VAR 분석은 계산 부하가 높아 최대 3개의 주식만 선택할 수 있습니다."
-      );
-      setSelectedStocks(symbols.slice(0, 3));
-    } else {
-      setSelectedStocks(symbols);
-    }
-  };
+
 
   // 파라미터 변경 핸들러
   const handleParamChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -107,12 +90,23 @@ export default function VARPage() {
       <div className="card">
         <h2 className="section-title">분석 설정</h2>
 
-        <StockSelector
-          stocks={stocks}
-          selectedStocks={selectedStocks}
-          onChange={handleStockSelection}
-          multiple={true}
-        />
+        <div className="mb-4">
+          <StockSelector
+            stocks={stocks}
+            selectedStocks={selectedStocks}
+            targetStock={targetStock}
+            featureStocks={featureStocks}
+            onTargetChange={setTargetStock}
+            onFeatureChange={setFeatureStocks}
+            onChange={(selected) => {
+              setSelectedStocks(selected);
+              if (selected.length > 0) {
+                setTargetStock(selected[0]);
+              }
+            }}
+            multiple={true}
+          />
+        </div>
         <p className="mt-1 text-xs text-gray-500">
           최대 3개의 주식을 선택할 수 있습니다. 더 많은 주식을 선택하면 계산
           부하가 크게 증가합니다.
@@ -163,7 +157,8 @@ export default function VARPage() {
         {selectedStocks.length > 0 ? (
           <VARAnalysis
             stocks={stocks}
-            selectedStocks={selectedStocks}
+            targetStock={targetStock}
+            featureStocks={featureStocks}
             params={varParams}
           />
         ) : (

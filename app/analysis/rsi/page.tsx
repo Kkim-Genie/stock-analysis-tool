@@ -15,18 +15,23 @@ export default function RSIPage() {
 
   // 데이터 로드
   useEffect(() => {
-    setStocks(mockStocks);
+    const timer = setTimeout(() => {
+      setStocks(mockStocks);
+      // 첫 번째 주식을 기본 선택
+      if (mockStocks.length > 0) {
+        setSelectedStock(mockStocks[0].symbol);
+      }
+    }, 100);
 
-    // 첫 번째 주식을 기본 선택
-    if (mockStocks.length > 0) {
-      setSelectedStock(mockStocks[0].symbol);
-    }
+    return () => clearTimeout(timer);
   }, []);
 
   // 주식 선택 핸들러
   const handleStockSelection = (symbols: string[]) => {
-    if (symbols.length > 0) {
+    if (symbols && symbols.length > 0) {
       setSelectedStock(symbols[0]);
+    } else {
+      setSelectedStock("");
     }
   };
 
@@ -55,7 +60,7 @@ export default function RSIPage() {
 
         <StockSelector
           stocks={stocks}
-          selectedStocks={[selectedStock]}
+          selectedStocks={selectedStock ? [selectedStock] : []}
           onChange={handleStockSelection}
           multiple={false}
         />

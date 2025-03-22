@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import * as tf from "@tensorflow/tfjs";
 import {
   LineChart,
@@ -18,11 +18,53 @@ import {
   denormalizeData,
 } from "../../lib/utils";
 
+interface DifferencingData {
+  date: string;
+  original: number;
+  diff1?: number;
+  diff2?: number;
+  diff3?: number;
+}
+
 interface ARIMAAnalysisProps {
   stocks: Stock[];
   selectedStock: string;
   params: ARIMAParams;
 }
+
+// 차분 데이터 계산 함수
+const calculateDifferences = (dates: string[], values: number[]): DifferencingData[] => {
+  const result: DifferencingData[] = [];
+  
+  for (let i = 0; i < values.length; i++) {
+    const data: DifferencingData = {
+      date: dates[i],
+      original: values[i],
+    };
+
+    // 1차 차분
+    if (i > 0) {
+      data.diff1 = values[i] - values[i - 1];
+    }
+
+    // 2차 차분
+    if (i > 1) {
+      data.diff2 = (values[i] - values[i - 1]) - (values[i - 1] - values[i - 2]);
+    }
+
+    // 3차 차분
+    if (i > 2) {
+      const diff1 = values[i] - values[i - 1];
+      const diff2 = values[i - 1] - values[i - 2];
+      const diff3 = values[i - 2] - values[i - 3];
+      data.diff3 = (diff1 - diff2) - (diff2 - diff3);
+    }
+
+    result.push(data);
+  }
+
+  return result;
+};
 
 // 미래 날짜 생성 함수
 const generateFutureDates = (startDate: string, days: number): string[] => {
@@ -67,6 +109,124 @@ const formatAnalysisResults = (
   return results;
 };
 
+const DifferencingCharts: React.FC<{ data: DifferencingData[] }> = ({ data }) => {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      {/* 원본 데이터 그래프 */}
+      <div className="card p-4">
+        <h3 className="text-lg font-semibold mb-4">원본 데이터</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="original"
+              stroke="#8884d8"
+              name="원본"
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* 1차 차분 그래프 */}
+      <div className="card p-4">
+        <h3 className="text-lg font-semibold mb-4">1차 차분</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="diff1"
+              stroke="#82ca9d"
+              name="1차 차분"
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* 2차 차분 그래프 */}
+      <div className="card p-4">
+        <h3 className="text-lg font-semibold mb-4">2차 차분</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="diff2"
+              stroke="#ffc658"
+              name="2차 차분"
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* 3차 차분 그래프 */}
+      <div className="card p-4">
+        <h3 className="text-lg font-semibold mb-4">3차 차분</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" />
+            <YAxis />
+            <Tooltip />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="diff3"
+              stroke="#ff7300"
+              name="3차 차분"
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* 차분 선택 가이드라인 */}
+      <div className="col-span-1 lg:col-span-2 card p-6">
+        <h3 className="text-lg font-semibold mb-4">차분 차수 선택 가이드라인</h3>
+        <div className="space-y-4 text-gray-700">
+          <p>차분은 시계열 데이터를 정상성(stationary)으로 만들기 위해 사용됩니다. 적절한 차분 차수를 선택하는 것이 중요합니다.</p>
+          
+          <div className="pl-4 border-l-4 border-blue-500">
+            <h4 className="font-semibold mb-2">차분 차수 선택 기준:</h4>
+            <ul className="list-disc list-inside space-y-2">
+              <li><strong>0차 (원본 데이터)</strong>: 데이터가 이미 정상성을 보이며 불규칙하게 변동하지 않는 경우</li>
+              <li><strong>1차 차분</strong>: 대부분의 금융 시계열에 적합. 선형 트렌드 제거</li>
+              <li><strong>2차 차분</strong>: 비선형 트렌드가 있는 경우. 대부분의 경우 불필요</li>
+              <li><strong>3차 차분</strong>: 매우 드물게 사용. 대부분의 경우 과도한 차분</li>
+            </ul>
+          </div>
+
+          <div className="mt-4">
+            <p className="font-semibold">추천 방법:</p>
+            <ol className="list-decimal list-inside space-y-2 mt-2">
+              <li>원본 데이터의 트렌드와 변동성을 관찰합니다.</li>
+              <li>1차 차분부터 시작하여 그래프를 확인합니다.</li>
+              <li>그래프가 안정적인 평균과 분산을 보이며 불규칙한 변동이 없는 차수를 선택합니다.</li>
+              <li>대부분의 경우 1차 차분으로 충분합니다.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ARIMAAnalysis: React.FC<ARIMAAnalysisProps> = ({
   stocks,
   selectedStock,
@@ -76,6 +236,23 @@ const ARIMAAnalysis: React.FC<ARIMAAnalysisProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isAnalysisStarted, setIsAnalysisStarted] = useState<boolean>(false);
+  const [differencingData, setDifferencingData] = useState<DifferencingData[]>([]);
+
+  // 차분 데이터 계산
+  const calculateDifferencingData = useCallback(() => {
+    const stockData = stocks.find((s) => s.symbol === selectedStock);
+    if (!stockData) return;
+
+    const dates = stockData.data.map(d => d.date);
+    const values = stockData.data.map(d => d.close);
+    const differences = calculateDifferences(dates, values);
+    setDifferencingData(differences);
+  }, [stocks, selectedStock]);
+
+  // 주식 데이터가 변경되면 차분 데이터 재계산
+  React.useEffect(() => {
+    calculateDifferencingData();
+  }, [selectedStock, stocks, calculateDifferencingData]);
 
   // ARIMA 분석 시작 핸들러
   const handleStartAnalysis = async () => {
@@ -240,6 +417,11 @@ const ARIMAAnalysis: React.FC<ARIMAAnalysisProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* 차분 그래프 */}
+      {differencingData.length > 0 && (
+        <DifferencingCharts data={differencingData} />
+      )}
+
       {!isAnalysisStarted ? (
         <div className="text-center py-6">
           <button

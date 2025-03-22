@@ -8,30 +8,37 @@ import { Stock, ARIMAParams } from "@/lib/types";
 
 export default function ARIMAPage() {
   const [stocks, setStocks] = useState<Stock[]>([]);
-  const [selectedStock, setSelectedStock] = useState<string>("");
+  const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
+  const [targetStock, setTargetStock] = useState<string>("");
+  const [featureStocks] = useState<string[]>([]);
   const [arimaParams, setArimaParams] = useState<ARIMAParams>({
     p: 5,
     d: 1,
     q: 0,
     forecastSteps: 30,
   });
-
   // 데이터 로드
   useEffect(() => {
-    setStocks(mockStocks);
+    const timer = setTimeout(() => {
+      setStocks(mockStocks);
+      // 모든 주식을 선택 가능한 목록으로 추가
+      const symbols = mockStocks.map(stock => stock.symbol);
+      setSelectedStocks(symbols);
+      if (symbols.length > 0) {
+        setTargetStock(symbols[0]);
+      }
+    }, 100);
 
-    // 첫 번째 주식을 기본 선택
-    if (mockStocks.length > 0) {
-      setSelectedStock(mockStocks[0].symbol);
-    }
+    return () => clearTimeout(timer);
   }, []);
 
-  // 주식 선택 핸들러
-  const handleStockSelection = (symbols: string[]) => {
-    if (symbols.length > 0) {
-      setSelectedStock(symbols[0]);
-    }
+  // 타겟 주식 선택 핸들러
+  const handleTargetChange = (target: string) => {
+    setTargetStock(target);
   };
+
+  // 피처 주식 선택 핸들러 - ARIMA에서는 사용하지 않음
+  const handleFeatureChange = () => {};
 
   // 파라미터 변경 핸들러
   const handleParamChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -58,9 +65,19 @@ export default function ARIMAPage() {
 
         <StockSelector
           stocks={stocks}
-          selectedStocks={[selectedStock]}
-          onChange={handleStockSelection}
-          multiple={false}
+          selectedStocks={selectedStocks}
+          targetStock={targetStock}
+          featureStocks={featureStocks}
+          onTargetChange={handleTargetChange}
+          onFeatureChange={handleFeatureChange}
+          onChange={(selected) => {
+            setSelectedStocks(selected);
+            if (selected.length > 0) {
+              handleTargetChange(selected[0]);
+            }
+          }}
+          multiple={true}
+          hideFeatureSelection={true}
         />
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
@@ -138,12 +155,12 @@ export default function ARIMAPage() {
         </div>
       </div>
 
-      {selectedStock && (
+      {targetStock && (
         <div className="card">
           <h2 className="section-title">분석 결과</h2>
           <ARIMAAnalysis
             stocks={stocks}
-            selectedStock={selectedStock}
+            selectedStock={targetStock}
             params={arimaParams}
           />
         </div>

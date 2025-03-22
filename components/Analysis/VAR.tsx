@@ -9,11 +9,96 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { Stock, VARParams, AnalysisResult } from "../../lib/types";
+import { Stock, VARParams, AnalysisResult, StockData } from "../../lib/types";
+
+// Chi-square test implementation
+function calculateChiSquare(observed: number[][], expected: number[][]): number {
+  let chiSquare = 0;
+  for (let i = 0; i < observed.length; i++) {
+    for (let j = 0; j < observed[i].length; j++) {
+      if (expected[i][j] !== 0) {
+        chiSquare += Math.pow(observed[i][j] - expected[i][j], 2) / expected[i][j];
+      }
+    }
+  }
+  return chiSquare;
+}
+
+// Calculate p-value from chi-square statistic and degrees of freedom
+function calculatePValue(chiSquare: number, df: number): number {
+  // Using gamma function approximation for chi-square distribution
+  function gammaCDF(x: number, a: number): number {
+    if (x <= 0) return 0;
+    
+    // Approximation of incomplete gamma function
+    let sum = 0;
+    let term = 1 / a;
+    for (let i = 0; i < 100; i++) {
+      sum += term;
+      term *= x / (a + i);
+    }
+    
+    return 1 - Math.exp(-x) * Math.pow(x, a) * sum;
+  }
+  
+  return 1 - gammaCDF(chiSquare / 2, df / 2);
+}
+
+// Create contingency table for two time series
+function createContingencyTable(series1: number[], series2: number[]): number[][] {
+  if (series1.length !== series2.length) throw new Error('Series must be of equal length');
+  
+  // Categorize changes as -1 (decrease), 0 (no change), 1 (increase)
+  const categorize = (curr: number, prev: number) => {
+    if (curr > prev) return 2;
+    if (curr < prev) return 0;
+    return 1;
+  };
+  
+  // Initialize 3x3 contingency table
+  const table = Array(3).fill(0).map(() => Array(3).fill(0));
+  
+  // Fill contingency table
+  for (let i = 1; i < series1.length; i++) {
+    const cat1 = categorize(series1[i], series1[i-1]);
+    const cat2 = categorize(series2[i], series2[i-1]);
+    table[cat1][cat2]++;
+  }
+  
+  return table;
+}
+
+// Calculate expected frequencies
+function calculateExpectedFrequencies(observed: number[][]): number[][] {
+  const rowSums = observed.map(row => row.reduce((a, b) => a + b, 0));
+  const colSums = observed[0].map((_, i) => observed.reduce((sum, row) => sum + row[i], 0));
+  const total = rowSums.reduce((a, b) => a + b, 0);
+  
+  return observed.map((row, i) => 
+    row.map((_, j) => (rowSums[i] * colSums[j]) / total)
+  );
+}
+
+// Analyze relationship between two time series
+function analyzeRelationship(series1: number[], series2: number[]): {
+  chiSquare: number;
+  pValue: number;
+  hasRelationship: boolean;
+} {
+  const contingencyTable = createContingencyTable(series1, series2);
+  const expectedFrequencies = calculateExpectedFrequencies(contingencyTable);
+  const chiSquare = calculateChiSquare(contingencyTable, expectedFrequencies);
+  const df = (contingencyTable.length - 1) * (contingencyTable[0].length - 1);
+  const pValue = calculatePValue(chiSquare, df);
+  const hasRelationship = pValue < 0.05; // Using 5% significance level
+  
+  return { chiSquare, pValue, hasRelationship };
+}
 
 interface VARAnalysisProps {
   stocks: Stock[];
-  selectedStocks: string[];
+  targetStock: string;
+  featureStocks: string[];
   params: VARParams;
 }
 
@@ -116,40 +201,101 @@ const formatAnalysisResults = (
 
 const VARAnalysis: React.FC<VARAnalysisProps> = ({
   stocks,
-  selectedStocks,
+  targetStock,
+  featureStocks,
   params,
 }) => {
   const [results, setResults] = useState<AnalysisResult[][]>([]);
+  const [normalizedResults, setNormalizedResults] = useState<AnalysisResult[][]>([]);
+
+  // 주어진 시계열의 마지막 값을 1로 하는 정규화
+  const normalizeToLastValue = (data: number[]): number[] => {
+    const lastValue = data[data.length - 1];
+    return data.map(value => value / lastValue);
+  };
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isAnalysisStarted, setIsAnalysisStarted] = useState<boolean>(false);
 
   // 기준 지표와 재료 지표 선택 상태 추가
-  const [targetStock, setTargetStock] = useState<string>("");
-  const [featureStocks, setFeatureStocks] = useState<string[]>([]);
+  const [cointegrationResults, setCointegrationResults] = useState<{
+    [key: string]: { statistic: number; pValue: number; isCointegrated: boolean };
+  }>({});
 
-  // 기준 지표 변경 핸들러
-  const handleTargetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newTarget = e.target.value;
-    setTargetStock(newTarget);
+  const [chiSquareResults, setChiSquareResults] = useState<{
+    [key: string]: { statistic: number; pValue: number; hasRelationship: boolean };
+  }>({});
 
-    // 기준 지표가 재료 지표에 포함되어 있다면 제거
-    setFeatureStocks((prev) => prev.filter((stock) => stock !== newTarget));
+  // 분석 시작 상태 초기화
+  useEffect(() => {
+    setIsAnalysisStarted(false);
+    setChiSquareResults({});
+    setCointegrationResults({});
+  }, [targetStock, featureStocks]);
+
+  // 공적분 검정 수행 함수
+  const performCointegrationTest = (
+    targetData: number[],
+    featureData: number[]
+  ): { isCointegrated: boolean; statistic: number; pValue: number } => {
+    // 1. 두 시계열의 차분 계산
+    const diffTarget = targetData.slice(1).map((val, i) => val - targetData[i]);
+    const diffFeature = featureData.slice(1).map((val, i) => val - featureData[i]);
+
+    // 2. 잔차 계산
+    const residuals = targetData.map((val, i) => val - (featureData[i] * (diffTarget.reduce((a, b) => a + b, 0) / diffFeature.reduce((a, b) => a + b, 0))));
+
+    // 3. ADF 테스트 수행 (단순화된 버전)
+    const n = residuals.length;
+    const laggedResiduals = residuals.slice(0, -1);
+    const deltaResiduals = residuals.slice(1).map((val, i) => val - residuals[i]);
+
+    // 회귀 계수 계산
+    const sumXY = laggedResiduals.reduce((sum, x, i) => sum + x * deltaResiduals[i], 0);
+    const sumX2 = laggedResiduals.reduce((sum, x) => sum + x * x, 0);
+    const beta = sumXY / sumX2;
+
+    // t-통계량 계산
+    const se = Math.sqrt(
+      deltaResiduals.reduce((sum, y, i) => sum + Math.pow(y - beta * laggedResiduals[i], 2), 0) /
+      (n - 2)
+    );
+    const statistic = Math.abs(beta / (se / Math.sqrt(sumX2)));
+
+    // p-value 계산 (단순화된 버전)
+    const pValue = Math.exp(-0.5 * statistic);
+
+    return {
+      isCointegrated: pValue < 0.05,
+      statistic,
+      pValue
+    };
   };
 
-  // 재료 지표 변경 핸들러
-  const handleFeaturesChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const options = e.target.options;
-    const selectedOptions: string[] = [];
-
-    for (let i = 0; i < options.length; i++) {
-      if (options[i].selected && options[i].value !== targetStock) {
-        selectedOptions.push(options[i].value);
-      }
+  // 카이제곱 분석 수행 함수
+  const performChiSquareAnalysis = (
+    targetData: number[],
+    featureData: number[]
+  ) => {
+    if (targetData.length !== featureData.length || targetData.length < 2) {
+      throw new Error('데이터 길이가 맞지 않거나 충분하지 않습니다.');
     }
 
-    setFeatureStocks(selectedOptions);
+    // 일별 변화율 계산
+    const targetChanges = targetData.slice(1).map((val, i) => val - targetData[i]);
+    const featureChanges = featureData.slice(1).map((val, i) => val - featureData[i]);
+
+    // 카이제곱 분석 수행
+    const result = analyzeRelationship(targetChanges, featureChanges);
+
+    return {
+      statistic: result.chiSquare,
+      pValue: result.pValue,
+      hasRelationship: result.hasRelationship
+    };
   };
+
+
 
   // ADF 테스트를 간략화한 버전 - 시계열이 정상성을 가지는지 확인
   const needsDifferencing = (data: number[]): boolean => {
@@ -321,24 +467,33 @@ const VARAnalysis: React.FC<VARAnalysisProps> = ({
       // 원본 가격 데이터 저장
       const originalPrices = [...stockPrices];
 
+      // 데이터 정규화
+      const normalizedPrices = stockPrices.map(prices => normalizeToLastValue(prices));
+
       // 정상성 확인 및 차분 적용
       const differenced: boolean[] = [];
       const processedData: number[][] = [];
+      const processedNormalizedData: number[][] = [];
 
       for (let i = 0; i < stockPrices.length; i++) {
         let processed = [...stockPrices[i]];
+        let processedNormalized = [...normalizedPrices[i]];
         const needsDiff = needsDifferencing(processed);
         differenced.push(needsDiff);
 
         if (needsDiff) {
           processed = applyDifferencing(processed);
+          processedNormalized = applyDifferencing(processedNormalized);
         }
 
         processedData.push(processed);
+        processedNormalizedData.push(processedNormalized);
       }
 
-      // 예측 실행 - 타겟 지표에 대해서만
+      // 원본 데이터와 정규화된 데이터로 각각 예측 실행
       const targetIndex = 0; // 기준 지표는 항상 첫 번째 위치에 있음
+      
+      // 원본 데이터 예측
       const predictions = simpleVarForecast(
         processedData,
         targetIndex,
@@ -346,20 +501,34 @@ const VARAnalysis: React.FC<VARAnalysisProps> = ({
         params.forecastSteps
       );
 
+      // 정규화된 데이터 예측
+      const normalizedPredictions = simpleVarForecast(
+        processedNormalizedData,
+        targetIndex,
+        Math.min(params.lag, 5),
+        params.forecastSteps
+      );
+
       // 차분을 적용한 경우 누적합 계산하여 원래 스케일로 변환
       let finalPredictions = [...predictions];
+      let finalNormalizedPredictions = [...normalizedPredictions];
 
       if (differenced[targetIndex]) {
-        // 마지막 실제 값을 시작점으로 누적합 계산
-        const lastActualValue =
-          originalPrices[targetIndex][originalPrices[targetIndex].length - 1];
+        // 원본 데이터 누적합
+        const lastActualValue = originalPrices[targetIndex][originalPrices[targetIndex].length - 1];
         const cumulative = [lastActualValue];
-
         for (const diff of predictions) {
           cumulative.push(cumulative[cumulative.length - 1] + diff);
         }
+        finalPredictions = cumulative.slice(1);
 
-        finalPredictions = cumulative.slice(1); // 첫 번째 값(원본 마지막 값)은 제외
+        // 정규화된 데이터 누적합
+        const lastNormalizedValue = normalizedPrices[targetIndex][normalizedPrices[targetIndex].length - 1];
+        const normalizedCumulative = [lastNormalizedValue];
+        for (const diff of normalizedPredictions) {
+          normalizedCumulative.push(normalizedCumulative[normalizedCumulative.length - 1] + diff);
+        }
+        finalNormalizedPredictions = normalizedCumulative.slice(1);
       }
 
       // 결과 포맷팅을 위한 날짜 추출
@@ -374,15 +543,23 @@ const VARAnalysis: React.FC<VARAnalysisProps> = ({
       );
 
       // 기준 지표에 대한 분석 결과 생성
-      const analysisResult = formatAnalysisResults(
+      const originalAnalysisResult = formatAnalysisResults(
         originalDates,
         originalPrices[targetIndex],
         futureDates,
         finalPredictions
       );
 
-      // 결과는 기준 지표에 대해서만 설정
-      setResults([analysisResult]);
+      const normalizedAnalysisResult = formatAnalysisResults(
+        originalDates,
+        normalizedPrices[targetIndex],
+        futureDates,
+        finalNormalizedPredictions
+      );
+
+      // 결과 설정
+      setResults([originalAnalysisResult]);
+      setNormalizedResults([normalizedAnalysisResult]);
     } catch (err) {
       setError(
         `VAR 분석 실패: ${err instanceof Error ? err.message : String(err)}`
@@ -392,13 +569,7 @@ const VARAnalysis: React.FC<VARAnalysisProps> = ({
     }
   };
 
-  // 컴포넌트 마운트 시 기본 기준 지표 설정
-  useEffect(() => {
-    if (selectedStocks.length > 0 && !targetStock) {
-      setTargetStock(selectedStocks[0]);
-      setFeatureStocks(selectedStocks.slice(1));
-    }
-  }, [selectedStocks, targetStock]);
+
 
   if (isLoading) {
     return (
@@ -411,55 +582,151 @@ const VARAnalysis: React.FC<VARAnalysisProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* 기준 지표 및 재료 지표 선택 UI */}
-      <div className="bg-white p-4 rounded-lg shadow">
-        <h3 className="text-lg font-medium mb-3">분석 설정</h3>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block mb-2 text-sm font-medium">
-              기준 지표 (예측 대상):
-            </label>
-            <select
-              value={targetStock}
-              onChange={handleTargetChange}
-              className="w-full p-2 border border-gray-300 rounded"
-            >
-              <option value="">선택해주세요</option>
-              {selectedStocks.map((stock) => (
-                <option key={`target-${stock}`} value={stock}>
-                  {stock} - {stocks.find((s) => s.symbol === stock)?.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block mb-2 text-sm font-medium">
-              재료 지표 (예측에 사용):
-            </label>
-            <select
-              multiple
-              value={featureStocks}
-              onChange={handleFeaturesChange}
-              className="w-full p-2 border border-gray-300 rounded h-24"
-            >
-              {selectedStocks
-                .filter((stock) => stock !== targetStock)
-                .map((stock) => (
-                  <option key={`feature-${stock}`} value={stock}>
-                    {stock} - {stocks.find((s) => s.symbol === stock)?.name}
-                  </option>
-                ))}
-            </select>
-            <p className="mt-1 text-xs text-gray-500">
-              Ctrl 키(Mac에서는 Command 키)를 누른 상태에서 클릭하여 여러 항목을
-              선택할 수 있습니다.
-            </p>
-          </div>
+      {/* Granger 인과검정 섹션 */}
+      <div className="bg-white p-4 rounded-lg shadow mb-6">
+        <h3 className="text-lg font-medium mb-3">Granger 인과검정</h3>
+        <div className="text-sm text-gray-600 mb-4">
+          재료 지표들이 기준 지표의 변화를 예측하는 데 도움이 되는지 분석합니다.
+          유의수준 0.05로 검정하여, 인과관계의 존재 여부를 확인합니다.
         </div>
+        
+        <div className="text-center">
+          <button
+            onClick={() => {
+              if (targetStock && featureStocks.length > 0) {
+                const targetStockData = stocks.find((s) => s.symbol === targetStock);
+                const newChiSquareResults: {
+                  [key: string]: { statistic: number; pValue: number; hasRelationship: boolean };
+                } = {};
+
+                if (targetStockData) {
+                  featureStocks.forEach((featureSymbol) => {
+                    const featureStockData = stocks.find(
+                      (s) => s.symbol === featureSymbol
+                    );
+                    if (featureStockData) {
+                      try {
+                        const result = performChiSquareAnalysis(
+                          targetStockData.data.map((p: StockData) => p.close),
+                          featureStockData.data.map((p: StockData) => p.close)
+                        );
+                        newChiSquareResults[featureSymbol] = result;
+                      } catch (error) {
+                        console.error(`Granger 검정 중 오류 발생 (${featureSymbol}):`, error);
+                      }
+                    }
+                  });
+                }
+                setChiSquareResults(newChiSquareResults);
+              }
+            }}
+            disabled={!targetStock || featureStocks.length === 0}
+            className={`px-4 py-2 font-medium rounded-lg transition-colors ${
+              targetStock && featureStocks.length > 0
+                ? "bg-blue-600 text-white hover:bg-blue-700"
+                : "bg-gray-300 text-gray-500 cursor-not-allowed"
+            }`}
+          >
+            Granger 검정 실행
+          </button>
+        </div>
+
+        {Object.keys(chiSquareResults).length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+            {Object.entries(chiSquareResults).map(([symbol, result]) => {
+              const stock = stocks.find(s => s.symbol === symbol);
+              return (
+                <div key={symbol} className="p-4 bg-gray-50 rounded-lg">
+                  <h4 className="font-medium text-lg mb-2">{stock?.name} ({symbol})</h4>
+                  <div className="space-y-2">
+                    <p className="text-sm">F-통계량: {result.statistic.toFixed(4)}</p>
+                    <p className="text-sm">p-value: {result.pValue.toFixed(4)}</p>
+                    <p className={`text-sm font-medium ${result.hasRelationship ? 'text-blue-600' : 'text-gray-600'}`}>
+                      {result.hasRelationship 
+                        ? '✓ 유의미한 인과관계가 있습니다 (p < 0.05)'
+                        : '✗ 유의미한 인과관계가 없습니다 (p ≥ 0.05)'}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
+      {/* 공적분 검정 섹션 */}
+      <div className="bg-white p-4 rounded-lg shadow mb-6">
+        <h3 className="text-lg font-medium mb-3">공적분 검정</h3>
+        <div className="text-sm text-gray-600 mb-4">
+          기준 지표와 재료 지표들 간의 장기적 규형성을 검정합니다.
+          공적분이 존재하면 두 시계열이 장기적으로 유사한 패턴을 보입니다.
+        </div>
+
+        <div className="text-center">
+          <button
+            onClick={() => {
+              if (targetStock && featureStocks.length > 0) {
+                const targetStockData = stocks.find((s) => s.symbol === targetStock);
+                const newCointegrationResults: {
+                  [key: string]: { statistic: number; pValue: number; isCointegrated: boolean };
+                } = {};
+
+                if (targetStockData) {
+                  featureStocks.forEach((featureSymbol) => {
+                    const featureStockData = stocks.find(
+                      (s) => s.symbol === featureSymbol
+                    );
+                    if (featureStockData) {
+                      try {
+                        const result = performCointegrationTest(
+                          targetStockData.data.map((p: StockData) => p.close),
+                          featureStockData.data.map((p: StockData) => p.close)
+                        );
+                        newCointegrationResults[featureSymbol] = result;
+                      } catch (error) {
+                        console.error(`공적분 검정 중 오류 발생 (${featureSymbol}):`, error);
+                      }
+                    }
+                  });
+                }
+                setCointegrationResults(newCointegrationResults);
+              }
+            }}
+            disabled={!targetStock || featureStocks.length === 0}
+            className={`px-4 py-2 font-medium rounded-lg transition-colors ${
+              targetStock && featureStocks.length > 0
+                ? "bg-blue-600 text-white hover:bg-blue-700"
+                : "bg-gray-300 text-gray-500 cursor-not-allowed"
+            }`}
+          >
+            공적분 검정 실행
+          </button>
+        </div>
+
+        {Object.keys(cointegrationResults).length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+            {Object.entries(cointegrationResults).map(([symbol, result]) => {
+              const stock = stocks.find(s => s.symbol === symbol);
+              return (
+                <div key={symbol} className="p-4 bg-gray-50 rounded-lg">
+                  <h4 className="font-medium text-lg mb-2">{stock?.name} ({symbol})</h4>
+                  <div className="space-y-2">
+                    <p className="text-sm">ADF 통계량: {result.statistic.toFixed(4)}</p>
+                    <p className="text-sm">p-value: {result.pValue.toFixed(4)}</p>
+                    <p className={`text-sm font-medium ${result.isCointegrated ? 'text-blue-600' : 'text-gray-600'}`}>
+                      {result.isCointegrated 
+                        ? '✓ 공적분 관계가 있습니다 (p < 0.05)'
+                        : '✗ 공적분 관계가 없습니다 (p ≥ 0.05)'}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* VAR 분석 섹션 */}
       {!isAnalysisStarted ? (
         <div className="text-center py-6">
           <button
@@ -503,58 +770,116 @@ const VARAnalysis: React.FC<VARAnalysisProps> = ({
                   분석 다시 실행
                 </button>
               </div>
-
+              {/* VAR 분석 결과 */}
               {results.length > 0 && (
-                <div className="border rounded-lg p-4 bg-white mb-6">
-                  <h3 className="text-lg font-medium mb-3">
-                    {targetStock} 예측 결과{" "}
-                    {featureStocks.length > 0 &&
-                      `(재료 지표: ${featureStocks.join(", ")})`}
-                  </h3>
+                <div className="space-y-6">
+                  {/* 원본 데이터 그래프 */}
+                  <div className="border rounded-lg p-4 bg-white">
+                    <h3 className="text-lg font-medium mb-3">
+                      원본 데이터 분석 결과
+                    </h3>
 
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart
-                      data={results[0]}
-                      margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="date"
-                        tick={{ fontSize: 12 }}
-                        interval={Math.floor(results[0].length / 10)}
-                      />
-                      <YAxis domain={["auto", "auto"]} />
-                      <Tooltip
-                        formatter={(value) => {
-                          if (value === null) return ["-", ""];
-                          return [
-                            `${parseFloat(value as string).toFixed(2)}`,
-                            "가격",
-                          ];
-                        }}
-                        labelFormatter={(label) => `날짜: ${label}`}
-                      />
-                      <Legend />
-                      <Line
-                        type="monotone"
-                        dataKey="value"
-                        stroke="#8884d8"
-                        name="실제 가격"
-                        dot={false}
-                        strokeWidth={2}
-                        connectNulls={false}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="prediction"
-                        stroke="#ff7300"
-                        name="예측 가격"
-                        strokeDasharray="5 5"
-                        strokeWidth={2}
-                        connectNulls={true}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <LineChart
+                        data={results[0]}
+                        margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 12 }}
+                          interval={Math.floor(results[0].length / 10)}
+                        />
+                        <YAxis domain={["auto", "auto"]} />
+                        <Tooltip
+                          formatter={(value) => {
+                            if (value === null) return ["-", ""];
+                            return [
+                              `${parseFloat(value as string).toFixed(2)}`,
+                              "가격",
+                            ];
+                          }}
+                          labelFormatter={(label) => `날짜: ${label}`}
+                        />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="value"
+                          stroke="#8884d8"
+                          name="실제 가격"
+                          dot={false}
+                          strokeWidth={2}
+                          connectNulls={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="prediction"
+                          stroke="#ff7300"
+                          name="예측 가격"
+                          strokeDasharray="5 5"
+                          strokeWidth={2}
+                          connectNulls={true}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* 정규화 데이터 그래프 */}
+                  <div className="border rounded-lg p-4 bg-white">
+                    <h3 className="text-lg font-medium mb-3">
+                      정규화 데이터 분석 결과
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      마지막 가격을 1로 정규화한 그래프입니다.
+                    </p>
+
+                    <ResponsiveContainer width="100%" height={300}>
+                      <LineChart
+                        data={normalizedResults[0]}
+                        margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 12 }}
+                          interval={Math.floor(normalizedResults[0].length / 10)}
+                        />
+                        <YAxis 
+                          domain={["auto", "auto"]} 
+                          tickFormatter={(value) => value.toFixed(2)}
+                        />
+                        <Tooltip
+                          formatter={(value) => {
+                            if (value === null) return ["-", ""];
+                            return [
+                              `${parseFloat(value as string).toFixed(4)}`,
+                              "상대값",
+                            ];
+                          }}
+                          labelFormatter={(label) => `날짜: ${label}`}
+                        />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="value"
+                          stroke="#8884d8"
+                          name="실제 상대값"
+                          dot={false}
+                          strokeWidth={2}
+                          connectNulls={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="prediction"
+                          stroke="#ff7300"
+                          name="예측 상대값"
+                          strokeDasharray="5 5"
+                          strokeWidth={2}
+                          connectNulls={true}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               )}
             </div>

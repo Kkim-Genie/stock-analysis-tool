@@ -10,7 +10,6 @@ export default function GARCHPage() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
   const [targetStock, setTargetStock] = useState<string>("");
-  const [featureStocks] = useState<string[]>([]);
   const [garchParams, setGarchParams] = useState<GARCHParams>({
     p: 1,
     q: 1,
@@ -19,7 +18,7 @@ export default function GARCHPage() {
 
   // 데이터 로드
   useEffect(() => {
-    const timer = setTimeout(() => {
+    try {
       setStocks(mockStocks);
       // 모든 주식을 선택 가능한 목록으로 추가
       const symbols = mockStocks.map(stock => stock.symbol);
@@ -27,9 +26,11 @@ export default function GARCHPage() {
       if (symbols.length > 0) {
         setTargetStock(symbols[0]);
       }
-    }, 100);
-
-    return () => clearTimeout(timer);
+    } catch (error) {
+      console.error('Error loading stock data:', error);
+      setStocks([]);
+      setSelectedStocks([]);
+    }
   }, []);
 
   // 타겟 주식 선택 핸들러
@@ -37,15 +38,27 @@ export default function GARCHPage() {
     setTargetStock(target);
   };
 
-  // 피처 주식 선택 핸들러 - GARCH에서는 사용하지 않음
-  const handleFeatureChange = () => {};
-
   // 파라미터 변경 핸들러
   const handleParamChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
+    const numValue = parseInt(value);
+    
+    // Validate input values
+    if (isNaN(numValue)) return;
+    
+    // Set limits for each parameter
+    const limits = {
+      p: { min: 1, max: 5 },
+      q: { min: 1, max: 5 },
+      forecastSteps: { min: 1, max: 100 }
+    };
+    
+    const param = name as keyof typeof limits;
+    if (numValue < limits[param].min || numValue > limits[param].max) return;
+
     setGarchParams((prev) => ({
       ...prev,
-      [name]: parseInt(value),
+      [name]: numValue,
     }));
   };
 
@@ -67,10 +80,10 @@ export default function GARCHPage() {
         <StockSelector
           stocks={stocks}
           selectedStocks={selectedStocks}
+          onChange={(selected) => setSelectedStocks(selected)}
+          multiple={false}
           targetStock={targetStock}
-          featureStocks={featureStocks}
           onTargetChange={handleTargetChange}
-          onFeatureChange={handleFeatureChange}
           hideFeatureSelection={true}
         />
 
